@@ -73,8 +73,27 @@ namespace CGL {
         // TODO (Part 3): Write your sampling loop here
         // TODO BEFORE YOU BEGIN
         // UPDATE `est_radiance_global_illumination` to return direct lighting instead of normal shading 
+        for (int i = 0; i < num_samples; ++i) {
+            Vector3D wi = hemisphereSampler->get_sample(); // local space sample
+            Vector3D wi_world = o2w * wi;
 
-        return Vector3D(1.0);
+            Ray sample_ray(hit_p + EPS_F * wi_world, wi_world); 
+            sample_ray.min_t = EPS_F;
+            sample_ray.max_t = INF_D;
+
+            Intersection isect_sample;
+            if (bvh->intersect(sample_ray, &isect_sample)) {
+                Vector3D emission = isect_sample.bsdf->get_emission();
+                if (emission.norm() > 0) {
+                    Vector3D f = isect.bsdf->f(w_out, wi);
+                    double cos_theta = wi.z; 
+                    double pdf = 1.0 / (2.0 * PI);
+                    L_out += f * emission * cos_theta / pdf;
+                }
+            }
+        }
+
+        return L_out / num_samples;
 
     }
 
@@ -95,10 +114,45 @@ namespace CGL {
         // toward the camera if this is a primary ray)
         const Vector3D hit_p = r.o + r.d * isect.t;
         const Vector3D w_out = w2o * (-r.d);
-        Vector3D L_out;
+        Vector3D L_out(0.0);
 
+        // Step 4: Loop through all scene lights
+        for (const auto& light : scene->lights) {
+            int num_samples = light->is_delta_light() ? 1 : ns_area_light;
 
-        return Vector3D(1.0);
+            for (int i = 0; i < num_samples; ++i) {
+                Vector3D wi_world, wi_object;
+                double dist_to_light, pdf;
+
+                // Sample the light (importance sampling)
+                Vector3D emission = light->sample_L(hit_p, &wi_world, &dist_to_light, &pdf);
+                wi_object = w2o * wi_world;
+
+                if (pdf <= 0.0) continue;
+
+                // Create a shadow ray
+                Ray shadow_ray(hit_p + EPS_D * wi_world, wi_world);
+                shadow_ray.max_t = dist_to_light - EPS_F;
+
+                // Check if the light is visible
+                Intersection shadow_isect;
+                if (!bvh->intersect(shadow_ray, &shadow_isect)) {
+                    // Evaluate BSDF in object space
+                    Vector3D f = isect.bsdf->f(w_out, wi_object);
+
+                    // Compute the incoming angle cosine
+                    double cos_theta = std::max(0.0, wi_object.z);
+
+                    // Accumulate the sample
+                    L_out += f * emission * cos_theta / pdf;
+                }
+            }
+
+            if (!light->is_delta_light()) {
+                L_out /= (double)num_samples;
+            }
+        }
+        return L_out;
 
     }
 
@@ -115,10 +169,9 @@ namespace CGL {
         // TODO: Part 3, Task 3
         // Returns either the direct illumination by hemisphere or importance sampling
         // depending on `direct_hemisphere_sample`
-
-
-        return Vector3D(1.0);
-
+        return direct_hemisphere_sample ?
+            estimate_direct_lighting_hemisphere(r, isect) :
+            estimate_direct_lighting_importance(r, isect);
 
     }
 
@@ -157,7 +210,7 @@ namespace CGL {
             return envLight ? envLight->sample_dir(r) : Vector3D(0.0);
 
         // TODO (Part 3): Return the direct illumination.
-        return zero_bounce_radiance(r, isect);
+        return zero_bounce_radiance(r, isect) + one_bounce_radiance(r, isect);
 
         // TODO (Part 4): Accumulate the "direct" and "indirect"
         // parts of global illumination into L_out rather than just direct
@@ -192,7 +245,7 @@ namespace CGL {
         // Store the result
         sampleBuffer.update_pixel(average_radiance, x, y);
         sampleCountBuffer[x + y * sampleBuffer.w] = num_samples;
-     
+
     }
 
     void PathTracer::autofocus(Vector2D loc) {
