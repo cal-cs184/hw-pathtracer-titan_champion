@@ -184,14 +184,52 @@ namespace CGL {
         Vector3D hit_p = r.o + r.d * isect.t;
         Vector3D w_out = w2o * (-r.d);
 
-        Vector3D L_out(0, 0, 0);
+        Vector3D L_out(0.0);
 
         // TODO: Part 4, Task 2
         // Returns the one bounce radiance + radiance from extra bounces at this point.
         // Should be called recursively to simulate extra bounces.
+            // 1. Direct lighting (always include) 
+        if (direct_hemisphere_sample) {
+            L_out += estimate_direct_lighting_hemisphere(r, isect);
+        }
+        else {
+            L_out += estimate_direct_lighting_importance(r, isect);
+        }
 
+        // 2. Terminate if max depth reached 
+        if (r.depth <= 1) return L_out;
+
+        // 3. Sample BSDF to get incoming direction
+        Vector3D wi_object;
+        double pdf;
+        Vector3D f = isect.bsdf->sample_f(w_out, &wi_object, &pdf);
+
+        if (f.norm() < EPS_F || pdf < EPS_F) return L_out;
+
+        Vector3D wi_world = o2w * wi_object;
+        Ray bounce_ray(hit_p + EPS_F * wi_world, wi_world);
+        bounce_ray.depth = r.depth - 1;
+
+        // 4. Russian Roulette 
+        double rr_prob = 0.3;
+        bool apply_rr = (r.depth < max_ray_depth);
+        if (apply_rr && coin_flip(rr_prob)) {
+            return L_out;  // terminate path
+        }
+
+        // 5. Recurse to get incoming radiance 
+        Vector3D recurse_radiance = est_radiance_global_illumination(bounce_ray);
+
+        // 6. Accumulate: apply Russian Roulette weight if needed 
+        double cos_theta = std::max(0.0, wi_object.z);
+        double weight = 1.0 / pdf;
+        if (apply_rr) weight /= (1.0 - rr_prob);
+
+        L_out += f * recurse_radiance * cos_theta * weight;
 
         return L_out;
+     
     }
 
     Vector3D PathTracer::est_radiance_global_illumination(const Ray& r) {
@@ -209,11 +247,19 @@ namespace CGL {
         if (!bvh->intersect(r, &isect))
             return envLight ? envLight->sample_dir(r) : Vector3D(0.0);
 
+        // Compute zero-bounce (emission) + at least one-bounce lighting
+        //Vector3D L_out = zero_bounce_radiance(r, isect);
+
+        // Add direct + indirect illumination using path tracing
+        //L_out += at_least_one_bounce_radiance(r, isect);
+
         // TODO (Part 3): Return the direct illumination.
-        return zero_bounce_radiance(r, isect) + one_bounce_radiance(r, isect);
 
         // TODO (Part 4): Accumulate the "direct" and "indirect"
         // parts of global illumination into L_out rather than just direct
+        //return L_out;
+
+        return zero_bounce_radiance(r, isect) + at_least_one_bounce_radiance(r, isect);
 
     }
 
