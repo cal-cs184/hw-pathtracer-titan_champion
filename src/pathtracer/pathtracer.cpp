@@ -272,25 +272,47 @@ namespace CGL {
         // TODO (Part 5):
         // Modify your implementation to include adaptive sampling.
         // Use the command line parameters "samplesPerBatch" and "maxTolerance"
-        int num_samples = ns_aa;
         Vector2D origin = Vector2D(x, y);
+        Vector3D s1 = Vector3D(0.0); // Sum of samples
+        Vector3D s2 = Vector3D(0.0); // Sum of squared samples
+        Vector3D radiance;           // Final color
 
-        Vector3D radiance_sum = Vector3D(0.0);
+        int samples = 0;
 
-        for (int i = 0; i < num_samples; i++) {
-            // Generate a sample within the pixel (jittered for anti-aliasing)
-            Vector2D sample = origin + gridSampler->get_sample(); // returns random offset in [0,1)^2
-            Ray r = camera->generate_ray(sample.x / sampleBuffer.w, sample.y / sampleBuffer.h);
-            r.depth = max_ray_depth;  // typically set to control recursion
+        while (samples < ns_aa) {
+            for (int i = 0; i < samplesPerBatch && samples < ns_aa; i++) {
+                Vector2D sample = origin + gridSampler->get_sample();  // jittered sample in [0,1)^2
+                Ray r = camera->generate_ray(sample.x / sampleBuffer.w, sample.y / sampleBuffer.h);
+                r.depth = max_ray_depth;
+                Vector3D illum = est_radiance_global_illumination(r);
 
-            radiance_sum += est_radiance_global_illumination(r);
+                s1 += illum;
+                s2 += Vector3D(illum.x * illum.x, illum.y * illum.y, illum.z * illum.z);
+                samples++;
+            }
+
+            // Only check adaptive condition if we have at least two batches
+            if (samples >= 2 * samplesPerBatch) {
+                // Compute mean and variance
+                Vector3D mean = s1 / samples;
+                Vector3D variance = (s2 - (s1 * s1) / samples) / (samples - 1);
+                Vector3D stddev = Vector3D(
+                    sqrt(variance.x),
+                    sqrt(variance.y),
+                    sqrt(variance.z)
+                );
+
+                // 95% confidence interval estimate
+                double I = 1.96 * std::max({ stddev.x, stddev.y, stddev.z }) / sqrt(samples);
+                if (I <= maxTolerance) break;
+            }
         }
 
-        Vector3D average_radiance = radiance_sum / num_samples;
+        radiance = s1 / samples;
 
-        // Store the result
-        sampleBuffer.update_pixel(average_radiance, x, y);
-        sampleCountBuffer[x + y * sampleBuffer.w] = num_samples;
+        sampleBuffer.update_pixel(radiance, x, y);
+        sampleCountBuffer[x + y * sampleBuffer.w] = samples;
+ 
 
     }
 
